@@ -1,7 +1,7 @@
 {
 	"id": "bubbles-plugin",
-	"name": "Bubbles Plugin",
-	"version": "0.0.1",
+	"name": "Bubbles",
+	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
 	"description": "",
 	"author": "Robert Källgren",

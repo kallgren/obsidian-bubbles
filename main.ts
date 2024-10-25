@@ -1,86 +1,133 @@
 import {
 	App,
-	Editor,
 	MarkdownView,
-	Modal,
 	Notice,
 	Plugin,
 	PluginSettingTab,
 	Setting,
+	TFile,
+	normalizePath,
 } from "obsidian";
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface BubblesPluginSettings {
+	bubbleFolder: string;
+	archiveFolder: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: "default",
+const DEFAULT_SETTINGS: BubblesPluginSettings = {
+	bubbleFolder: "plugins/bubbles",
+	archiveFolder: "plugins/bubbles/archive",
 };
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class BubblesPlugin extends Plugin {
+	settings: BubblesPluginSettings;
+	private bubbleStatusBar: HTMLElement;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon(
-			"dice",
-			"Sample Plugin",
-			(evt: MouseEvent) => {
-				// Called when the user clicks the icon.
-				new Notice("This is a notice!");
-			}
-		);
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass("my-plugin-ribbon-class");
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText("Status Bar Text");
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: "open-sample-modal-simple",
-			name: "Open sample modal (simple)",
-			callback: () => {
-				new SampleModal(this.app).open();
-			},
+		this.addRibbonIcon("circle", "Create new bubble", (evt: MouseEvent) => {
+			this.createBubble(true);
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
+
+		// Initialize status bar
+		this.bubbleStatusBar = this.addStatusBarItem();
+		this.updateBubbleCount();
+
 		this.addCommand({
-			id: "sample-editor-command",
-			name: "Sample editor command",
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection("Sample Editor Command");
-			},
+			id: "create-bubble",
+			name: "Create bubble",
+			callback: () => this.createBubble(),
 		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
+
 		this.addCommand({
-			id: "open-sample-modal-complex",
-			name: "Open sample modal (complex)",
+			id: "open-oldest-bubble",
+			name: "Open oldest bubble",
+			callback: () => this.openBubbleByAge("oldest"),
+		});
+
+		this.addCommand({
+			id: "open-most-recent-bubble",
+			name: "Open most recent bubble",
+			callback: () => this.openBubbleByAge("newest"),
+		});
+
+		this.addCommand({
+			id: "next-bubble",
+			name: "Go to next bubble",
 			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView =
-					this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
+				if (this.isActiveFileAnActiveBubble()) {
 					if (!checking) {
-						new SampleModal(this.app).open();
+						this.openAdjacentBubble("next");
 					}
 
-					// This command will only show up in Command Palette when the check function returns true
 					return true;
 				}
 			},
 		});
 
+		this.addCommand({
+			id: "previous-bubble",
+			name: "Go to previous bubble",
+			checkCallback: (checking: boolean) => {
+				if (this.isActiveFileAnActiveBubble()) {
+					if (!checking) {
+						this.openAdjacentBubble("previous");
+					}
+
+					return true;
+				}
+			},
+		});
+
+		this.addCommand({
+			id: "archive-current-bubble",
+			name: "Archive current bubble",
+			checkCallback: (checking: boolean) => {
+				if (this.isActiveFileAnActiveBubble()) {
+					if (!checking) {
+						this.archiveCurrentBubble();
+					}
+
+					return true;
+				}
+			},
+		});
+
+		this.addCommand({
+			id: "archive-current-bubble-go-next",
+			name: "Archive current bubble and go to next",
+			checkCallback: (checking: boolean) => {
+				if (this.isActiveFileAnActiveBubble()) {
+					if (!checking) {
+						this.archiveAndOpenNextBubble();
+					}
+
+					return true;
+				}
+			},
+		});
+
+		// this.addCommand({
+		// 	id: "open-bubbles-folder",
+		// 	name: "Open bubbles folders",
+		// 	callback: () => this.openBubblesFolder(),
+		// });
+
+		// this.addCommand({
+		// 	id: "open-all-bubbles",
+		// 	name: "Open all active bubbles in separate tabs",
+		// 	callback: () => this.openAllBubbles(),
+		// });
+
+		// this.addCommand({
+		// 	id: "close-all-bubbles",
+		// 	name: "Closes all open bubbles (including archived)",
+		// 	callback: () => this.closeAllBubbles(),
+		// });
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new BubblesSettingTab(this.app, this));
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
@@ -107,28 +154,254 @@ export default class MyPlugin extends Plugin {
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
+
+	isActiveBubble(file: TFile): boolean {
+		const folderPath = normalizePath(this.settings.bubbleFolder);
+		const archiveFolderPath = normalizePath(this.settings.archiveFolder);
+
+		return (
+			file.path.startsWith(folderPath) &&
+			!file.path.startsWith(archiveFolderPath) &&
+			file.extension === "md"
+		);
+	}
+
+	// Get all bubbles excluding archived ones
+	getActiveBubbles(): TFile[] {
+		const files = this.app.vault.getFiles();
+		return files.filter(this.isActiveBubble.bind(this));
+	}
+
+	// TODO: Can this be used in other places?
+	isActiveFileAnActiveBubble(): boolean {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) return false;
+
+		return this.isActiveBubble(activeFile);
+	}
+
+	// Function to update the bubble count in the status bar
+	async updateBubbleCount() {
+		// Filter for non-archived bubbles in the main bubbles folder
+		const files = this.app.vault.getFiles();
+		const bubbleFiles = files.filter(this.isActiveBubble.bind(this));
+
+		// Update status bar with the count
+		const count = bubbleFiles.length;
+		if (count) {
+			const bubbleWord = count === 1 ? "bubble" : "bubbles";
+			this.bubbleStatusBar.setText(`${bubbleFiles.length} ${bubbleWord}`);
+		} else {
+			this.bubbleStatusBar.setText("");
+		}
+	}
+
+	async createBubble(newTab: boolean | undefined = false) {
+		const now = new Date();
+		const dateStr = now.toISOString().split("T")[0]; // Format: YYYY-MM-DD
+		const timeStr = `${now.getHours()}${now.getMinutes()}${now.getSeconds()}`; // Format: HHMMSS
+		const folderPath = normalizePath(this.settings.bubbleFolder);
+		const filePrefix = `[Bubble] ${dateStr} ${timeStr}`;
+		let fileName = `${filePrefix}.md`;
+		let count = 1;
+
+		// Increment file name if one already exists
+		while (
+			this.app.vault.getAbstractFileByPath(`${folderPath}/${fileName}`)
+		) {
+			fileName = `${filePrefix} (${count}).md`;
+			count++;
+		}
+
+		const filePath = `${folderPath}/${fileName}`;
+		const fileContent = "";
+
+		try {
+			// Ensure folder exists
+			await this.app.vault.createFolder(folderPath).catch(() => {});
+
+			// Create the new file
+			const newFile = await this.app.vault.create(filePath, fileContent);
+			// new Notice(`Created new bubble: ${fileName}`);
+			this.updateBubbleCount();
+
+			// Open the new file in the editor
+			const leaf = this.app.workspace.getLeaf(newTab);
+			await leaf.openFile(newFile);
+		} catch (error) {
+			console.error("Failed to create bubble:", error);
+			new Notice(
+				"Error creating bubble. Check the console for more details."
+			);
+		}
+	}
+
+	async getAdjacentBubble(
+		direction: "previous" | "next"
+	): Promise<TFile | null> {
+		const bubbleFiles = this.getActiveBubbles();
+
+		// If there are no bubbles, show a notice
+		if (bubbleFiles.length === 0) {
+			new Notice("Could not find any bubbles."); // TODO: throw error instead?
+			return null;
+		}
+
+		// Sort files by creation date (oldest first)
+		bubbleFiles.sort((a, b) => a.stat.ctime - b.stat.ctime);
+
+		// Get the currently open file
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile || !bubbleFiles.includes(activeFile)) {
+			new Notice("Currently not in an active bubble."); // TODO: throw error instead?
+			return null;
+		}
+
+		// Find the index of the active file
+		const currentIndex = bubbleFiles.findIndex(
+			(file) => file === activeFile
+		);
+
+		// Determine the target index based on direction
+		const targetIndex =
+			direction === "previous" ? currentIndex - 1 : currentIndex + 1;
+
+		// Check if the target index is valid
+		if (targetIndex < 0 || targetIndex >= bubbleFiles.length) {
+			if (direction === "previous") {
+				new Notice("There's no bubble before this one."); // TODO: throw error and leave this for the calling function?
+			} else {
+				new Notice("There's no bubble after this one."); // TODO: throw error and leave this for the calling function?
+			}
+			return null;
+		}
+
+		// Get the target file (previous or next based on direction)
+		const targetFile = bubbleFiles[targetIndex];
+
+		return targetFile;
+	}
+
+	async openAdjacentBubble(direction: "previous" | "next") {
+		const targetFile = await this.getAdjacentBubble(direction);
+
+		// Open the target file in a new workspace leaf
+		if (targetFile) {
+			const leaf = this.app.workspace.getLeaf();
+			await leaf.openFile(targetFile);
+		}
+	}
+
+	async openBubbleByAge(age: "newest" | "oldest") {
+		const bubbleFiles = this.getActiveBubbles();
+
+		// If there are no files, create new bubble and show a notice
+		if (bubbleFiles.length === 0) {
+			this.createBubble();
+			new Notice("New bubble created.");
+			return;
+		}
+
+		// Sort files by creation date (newest first for newest, oldest first for oldest)
+		bubbleFiles.sort((a, b) => a.stat.ctime - b.stat.ctime); // ctime is the creation time
+
+		// Get the file based on age
+		const targetFile =
+			age === "newest"
+				? bubbleFiles[bubbleFiles.length - 1]
+				: bubbleFiles[0];
+
+		// Check if the target file is already open in any of the leaves
+		const openLeaf = this.app.workspace
+			.getLeavesOfType("markdown")
+			.find(
+				(leaf) =>
+					leaf.view instanceof MarkdownView &&
+					leaf.view.file?.path === targetFile.path
+			);
+
+		if (openLeaf) {
+			this.app.workspace.setActiveLeaf(openLeaf);
+		} else {
+			await this.app.workspace.getLeaf().openFile(targetFile);
+		}
+	}
+
+	async archiveCurrentBubble() {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			new Notice("No active bubble to archive.");
+			return false;
+		}
+
+		if (!this.isActiveFileAnActiveBubble()) {
+			new Notice("Current note is not a bubble or is already archived.");
+			return false;
+		}
+
+		const archiveFolderPath = normalizePath(this.settings.archiveFolder);
+		const newFilePath = `${archiveFolderPath}/${activeFile.name}`;
+
+		try {
+			// Ensure archive folder exists
+			await this.app.vault
+				.createFolder(archiveFolderPath)
+				.catch(() => {});
+
+			// Move the file to the archive folder
+			await this.app.fileManager.renameFile(activeFile, newFilePath);
+			new Notice(`Archived ${activeFile.name} to ${archiveFolderPath}`);
+			this.updateBubbleCount();
+
+			return true; // Archive successful
+		} catch (error) {
+			console.error("Failed to archive bubble:", error);
+			new Notice(
+				"Error archiving bubble. Check the console for more details."
+			);
+			return false; // Archive failed
+		}
+	}
+
+	async archiveAndOpenNextBubble() {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			new Notice("No active bubble to archive.");
+			return;
+		}
+
+		const nextBubble = await this.getAdjacentBubble("next");
+		const prevBubble = await this.getAdjacentBubble("previous");
+
+		// Archive the current note first
+		const archiveSuccess = await this.archiveCurrentBubble();
+		if (!archiveSuccess) {
+			// Notice already handled in archiveCurrentBubble()
+			// new Notice("Failed to archive the current bubble.");
+			return;
+		}
+
+		// Now that we have archived the current note, attempt to open the next or previous bubble
+		const currentLeaf = this.app.workspace.getLeaf();
+
+		if (nextBubble) {
+			await currentLeaf.openFile(nextBubble);
+		} else if (prevBubble) {
+			await currentLeaf.openFile(prevBubble);
+		} else {
+			if (currentLeaf) {
+				currentLeaf.detach();
+			}
+			// Notice already handled in getAdjacentBubble()
+			// new Notice("There's no bubble after this one.");
+		}
+	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+class BubblesSettingTab extends PluginSettingTab {
+	plugin: BubblesPlugin;
 
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText("Woah!");
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: BubblesPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -139,14 +412,27 @@ class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName("Setting #1")
-			.setDesc("It's a secret")
+			.setName("Folder")
+			.setDesc("The folder where active bubbles are stored")
 			.addText((text) =>
 				text
-					.setPlaceholder("Enter your secret")
-					.setValue(this.plugin.settings.mySetting)
+					.setPlaceholder(DEFAULT_SETTINGS.bubbleFolder)
+					.setValue(this.plugin.settings.bubbleFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.mySetting = value;
+						this.plugin.settings.bubbleFolder = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Archive folder")
+			.setDesc("The folder where archived bubbles are stored")
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_SETTINGS.archiveFolder)
+					.setValue(this.plugin.settings.archiveFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.archiveFolder = value;
 						await this.plugin.saveSettings();
 					})
 			);
